@@ -835,6 +835,54 @@ class _MotionCorrectedSequence(_WrapperSequence):
             'extent': self._frame_shape[:3],
         }
 
+    def patch_displacements(self, method, patch_slice, buffer_slice):
+        """
+        Calculate new displacements for some part of the sequence.
+
+        Parameters
+        ----------
+        method : sima.motion.MotionEstimationStrategy
+            The method for estimating the motion artifacts.
+        patch_slice : slice
+            The slice of frames that you wish to be patched with new
+            displacements.
+        buffer_slice : slice
+            A larger slice including the patch_slice. The motion correction
+            method will be applied to this buffer_slice, and the buffer slice
+            will also be used to estimate the offset difference between the
+            original and the newly calculated displacements.
+
+        Effects
+        -------
+        Changes the Sequences displacements for frames within patch_slice.
+        This method does NOT save the resulting dataset, so you can check
+        whether you like the patch and then decide whether do save or just
+        delete and reload the dataset that you are patching.
+
+        Warning: This code is meant to be a hack for now. Not robust/safe.
+        """
+        raw_seq = self._base[buffer_slice]
+        new_displacements = method.estimate(
+            sima.ImagingDataset([raw_seq], None))
+
+        # indices for accessing from the original data
+        all_indices = list(range(*buffer_slice.indices(len(raw_seq))))
+        patch_indices = patch_slice.indices(len(raw_seq))
+        buffer_indices = sorted(set(all_indices).difference(patch_indices))
+
+        # indices for accessing from the new displacements
+        buffer_idxs = [all_indices.idx(i) for i in buffer_indices]
+        patch_idxs = [all_indices.idx(i) for i in patch_indices]
+
+        # determine the calibration between the new and old displacements
+        orig_displacements = self.displacements[buffer_indices]
+        calibration_displacements = new_displacements[buffer_idxs]
+        shift = np.mean(orig_displacements - calibration_displacements, axis=0)
+
+        # modify the displacements (i.e. apply the patch)
+        self.displacements[patch_indices] = \
+            new_displacements[patch_idxs] + shift
+
 
 class _MaskedSequence(_WrapperSequence):
     """Sequence for masking invalid data with NaN's.
