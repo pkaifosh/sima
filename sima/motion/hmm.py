@@ -315,7 +315,7 @@ class Struct:
 
 class _HiddenMarkov(MotionEstimationStrategy):
 
-    def __init__(self, granularity=2, num_states_retained=50,
+    def __init__(self, granularity=2, retained=50,
                  max_displacement=None, n_processes=1, verbose=True):
         if isinstance(granularity, int) or isinstance(granularity, str):
             granularity = (granularity, 1)
@@ -362,7 +362,7 @@ class _HiddenMarkov(MotionEstimationStrategy):
                 imdata, positions,
                 it.repeat((transition_tbl, log_markov_tbl)), scaled_refs,
                 displacement_tbl, (tmp_states, log_p),
-                self._params.num_states_retained)
+                self._params.retained)
             new_shape = sequence.shape[:granularity[0]] + \
                 (sequence.shape[granularity[0]] / granularity[1],) + \
                 (disp.shape[-1],)
@@ -376,8 +376,9 @@ class _HiddenMarkov(MotionEstimationStrategy):
 
         Parameters
         ----------
-        num_states_retained : int
-            Number of states to retain at each time step of the HMM.
+        retained : int, float
+            The fraction (float) of probibility to retain or the number (int)
+            of hidden states to retain at each timestep.
         max_displacement : array of int
             The maximum allowed displacement magnitudes in [y,x].
 
@@ -443,9 +444,9 @@ class HiddenMarkov2D(_HiddenMarkov):
         displacement can be calculated for every n consecutive elements
         (e.g.\ granularity=('row', 8) for every 8 rows).
         Defaults to one displacement per row.
-    num_states_retained : int, optional
-        Number of states to retain at each time step of the HMM.
-        Defaults to 50.
+    retained : int or float, optional
+        The fraction (float) of probibility to retain or the number (int)
+        of hidden states to retain at each timestep.  Defaults to 50.
     max_displacement : array of int, optional
         The maximum allowed displacement magnitudes in [y,x]. By
         default, arbitrarily large displacements are allowed.
@@ -723,7 +724,7 @@ class PositionIterator(object):
 
 
 def _beam_search(imdata, positions, transitions, references, state_table,
-                 initial_dist, num_retained=50):
+                 initial_dist, retained=50):
     """Perform a beam search (modified Viterbi algorithm).
 
     Parameters
@@ -737,8 +738,9 @@ def _beam_search(imdata, positions, transitions, references, state_table,
     references : ndarray
     state_table : ndarray
     initial_dist : tuple
-    num_retained : int
-
+    retained : int or float, optional
+        The fraction (float) of probibility to retain or the number (int)
+        of hidden states to retain at each timestep.  Defaults to 50.
     """
     if state_table.shape[1] != 3:
         raise ValueError
@@ -760,7 +762,17 @@ def _beam_search(imdata, positions, transitions, references, state_table,
             references, log_references, pos, state_table)
         if np.any(np.isfinite(log_p)):
             log_p[np.isnan(log_p)] = -np.Inf  # Remove nans to sort.
-            ix = np.argsort(-log_p)[0:num_retained]  # Keep likely states.
+            sorted_indices = np.argsort(-log_p)
+            if isinstance(retained, float):
+                cum_prob = np.cumsum([
+                    np.exp(log_p[i] - log_p[sorted_indices[0]])
+                    for i in sorted_indices])
+                cum_prob /= cum_prob[-1]
+                num_retained = 1 + (
+                    i for i, v in enumerate(cum_prob) if v > retained).next()
+                ix = sorted_indices[:num_retained]
+            elif isinstance(retained, int):
+                ix = sorted_indices[0:retained]  # Keep likely states.
             states.append(tmp_states[ix])
             log_p_old = log_p[ix] - log_p[ix[0]]
             backpointer.append(tmp_backpointer[ix])
@@ -769,7 +781,7 @@ def _beam_search(imdata, positions, transitions, references, state_table,
             # then use states from the previous timestep.
             warnings.warn('No finite observation probabilities.')
             states.append(states[-1])
-            backpointer.append(np.arange(num_retained))
+            backpointer.append(np.arange(len(states[-1])))
     end_state_idx = np.argmax(log_p_old)
     return _backtrace(end_state_idx, backpointer[1:], states[1:], state_table)
 
@@ -780,9 +792,9 @@ class HiddenMarkov3D(_HiddenMarkov):
 
     Parameters
     ----------
-    num_states_retained : int, optional
-        Number of states to retain at each time step of the HMM.
-        Defaults to 50.
+    retained : int or float, optional
+        The fraction (float) of probibility to retain or the number (int)
+        of hidden states to retain at each timestep.  Defaults to 50.
     max_displacement : array of int, optional
         The maximum allowed displacement magnitudes in [y,x]. By
         default, arbitrarily large displacements are allowed.

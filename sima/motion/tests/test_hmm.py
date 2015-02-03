@@ -151,6 +151,8 @@ class Test_HiddenMarkov2D(object):
         frames = np.array([frame, shifted])
 
         self.hm2d = hmm.HiddenMarkov2D(n_processes=1, verbose=False)
+        self.hm2d_r = hmm.HiddenMarkov2D(
+            n_processes=1, verbose=False, retained=0.999)
         self.dataset = sima.ImagingDataset(
             [Sequence.create('ndarray', frames)], None)
 
@@ -208,6 +210,23 @@ class Test_HiddenMarkov2D(object):
         assert_(
             ((diffs - diffs.mean(axis=2).mean(axis=1).mean(axis=0)) > 1).mean()
             <= 0.001)
+
+    def test_hmm_retained(self):  # TODO: remove when displacements.pkl is updated
+        global tmp_dir
+        frames = Sequence.create('TIFF', example_tiff())
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=DeprecationWarning)
+            corrected = self.hm2d_r.correct(
+                [frames], os.path.join(tmp_dir, 'test_hmm_retained.sima'))
+        with open(misc.example_data() + '/displacements.pkl', 'rb') as fh:
+            displacements = [d.reshape((20, 1, 128, 2))
+                             for d in pickle.load(fh)]
+        displacements_ = [seq.displacements for seq in corrected]
+        diffs = displacements_[0] - displacements[0]
+        assert_(
+            ((diffs - diffs.mean(axis=2).mean(axis=1).mean(axis=0)) > 1).mean()
+            <= 0.001)
+
 
     def test_hmm_missing_frame(self):
         global tmp_dir
