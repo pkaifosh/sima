@@ -861,18 +861,18 @@ class _MotionCorrectedSequence(_WrapperSequence):
 
         Warning: This code is meant to be a hack for now. Not robust/safe.
         """
-        raw_seq = self._base[buffer_slice]
+        raw_seq = self._base
         new_displacements = method.estimate(
-            sima.ImagingDataset([raw_seq], None))
+            sima.ImagingDataset([raw_seq[buffer_slice]], None))[0]
 
         # indices for accessing from the original data
         all_indices = list(range(*buffer_slice.indices(len(raw_seq))))
-        patch_indices = patch_slice.indices(len(raw_seq))
+        patch_indices = list(range(*patch_slice.indices(len(raw_seq))))
         buffer_indices = sorted(set(all_indices).difference(patch_indices))
 
         # indices for accessing from the new displacements
-        buffer_idxs = [all_indices.idx(i) for i in buffer_indices]
-        patch_idxs = [all_indices.idx(i) for i in patch_indices]
+        buffer_idxs = [all_indices.index(i) for i in buffer_indices]
+        patch_idxs = [all_indices.index(i) for i in patch_indices]
 
         # determine the calibration between the new and old displacements
         orig_displacements = self.displacements[buffer_indices]
