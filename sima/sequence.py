@@ -835,7 +835,7 @@ class _MotionCorrectedSequence(_WrapperSequence):
             'extent': self._frame_shape[:3],
         }
 
-    def patch_displacements(self, method, patch_slice, buffer_slice):
+    def patch_displacements(self, method, patch_slice, buffer_slice=None):
         """
         Calculate new displacements for some part of the sequence.
 
@@ -861,7 +861,12 @@ class _MotionCorrectedSequence(_WrapperSequence):
 
         Warning: This code is meant to be a hack for now. Not robust/safe.
         """
+
+        if buffer_slice is None:
+            buffer_slice = patch_slice
+
         raw_seq = self._base
+
         new_displacements = method.estimate(
             sima.ImagingDataset([raw_seq[buffer_slice]], None))[0]
 
@@ -875,13 +880,19 @@ class _MotionCorrectedSequence(_WrapperSequence):
         patch_idxs = [all_indices.index(i) for i in patch_indices]
 
         # determine the calibration between the new and old displacements
-        orig_displacements = self.displacements[buffer_indices]
-        calibration_displacements = new_displacements[buffer_idxs]
-        shift = np.mean(orig_displacements - calibration_displacements, axis=0)
+        if len(buffer_idxs):
+            orig_displacements = self.displacements[buffer_indices]
+            calibration_displacements = new_displacements[buffer_idxs]
+        else:
+            orig_displacements = self.displacements
+            calibration_displacements = new_displacements
+        shift = np.mean(np.mean(np.mean(
+            orig_displacements - calibration_displacements, axis=0),
+            axis=0), axis=0)
 
         # modify the displacements (i.e. apply the patch)
         self.displacements[patch_indices] = \
-            new_displacements[patch_idxs] + shift
+            new_displacements[patch_idxs] + np.round(shift)
 
 
 class _MaskedSequence(_WrapperSequence):
