@@ -835,7 +835,7 @@ class _MotionCorrectedSequence(_WrapperSequence):
             'extent': self._frame_shape[:3],
         }
 
-    def patch_displacements(self, method, patch_slice, buffer_slice):
+    def patch_displacements(self, method, patch_slice, buffer_slice=None):
         """
         Calculate new displacements for some part of the sequence.
 
@@ -861,7 +861,12 @@ class _MotionCorrectedSequence(_WrapperSequence):
 
         Warning: This code is meant to be a hack for now. Not robust/safe.
         """
+
+        if buffer_slice is None:
+            buffer_slice = patch_slice
+
         raw_seq = self._base
+
         new_displacements = method.estimate(
             sima.ImagingDataset([raw_seq[buffer_slice]], None))[0]
 
@@ -875,13 +880,19 @@ class _MotionCorrectedSequence(_WrapperSequence):
         patch_idxs = [all_indices.index(i) for i in patch_indices]
 
         # determine the calibration between the new and old displacements
-        orig_displacements = self.displacements[buffer_indices]
-        calibration_displacements = new_displacements[buffer_idxs]
-        shift = np.mean(orig_displacements - calibration_displacements, axis=0)
+        if len(buffer_idxs):
+            orig_displacements = self.displacements[buffer_indices]
+            calibration_displacements = new_displacements[buffer_idxs]
+        else:
+            orig_displacements = self.displacements
+            calibration_displacements = new_displacements
+        shift = np.mean(np.mean(np.mean(
+            orig_displacements - calibration_displacements, axis=0),
+            axis=0), axis=0)
 
         # modify the displacements (i.e. apply the patch)
         self.displacements[patch_indices] = \
-            new_displacements[patch_idxs] + shift
+            new_displacements[patch_idxs] + np.round(shift)
 
 
 class _MaskedSequence(_WrapperSequence):
@@ -1017,13 +1028,50 @@ class _IndexedSequence(_WrapperSequence):
             'indices': self._indices
         }
 
-    # def __dir__(self):
-    #     """Customize how attributes are reported, e.g. for tab completion.
+    @classmethod
+    def _from_dict(cls, d, savedir=None):
 
-    #     This may not be necessary if we inherit an abstract class"""
-    #     heritage = dir(super(self.__class__, self)) # inherited attributes
-    #     return sorted(heritage + self.__class__.__dict__.keys() +
-    #                   self.__dict__.keys())
+        if not d['base']['__class__'] == _MotionCorrectedSequence:
+            return super(_IndexedSequence, cls)._from_dict(d, savedir)
+        else:
+            if np.min(d['base']['displacements']) >= 0:
+                return super(_IndexedSequence, cls)._from_dict(d, savedir)
+
+        disps = d['base']['displacements']
+        max_y = np.max(disps[:, :, :, 0])
+        max_x = np.max(disps[:, :, :, 1])
+        min_y = np.min(disps[:, :, :, 0])
+        min_x = np.min(disps[:, :, :, 1])
+        y_width = d['base']['extent'][1] - (max_y - min_y)
+        x_width = d['base']['extent'][2] - (max_x - min_x)
+
+        d['base']['displacements'][:, :, :, 0] -= min_y
+        d['base']['displacements'][:, :, :, 1] -= min_x
+
+        new_indices = list(d['indices'])
+        new_indices[2] = slice(new_indices[2].start - min_y,
+                               new_indices[2].stop - min_y,
+                               new_indices[2].step)
+        new_indices[3] = slice(new_indices[3].start - min_x,
+                               new_indices[3].stop - min_x,
+                               new_indices[3].step)
+        d['indices'] = tuple(new_indices)
+
+        max_y = np.max(d['base']['displacements'][:, :, :, 0])
+        max_x = np.max(d['base']['displacements'][:, :, :, 1])
+
+        d['base']['extent'] = (
+            d['base']['extent'][0], y_width + max_y, x_width + max_x)
+
+        return super(_IndexedSequence, cls)._from_dict(d, savedir)
+
+    def __dir__(self):
+        """Customize how attributes are reported, e.g. for tab completion.
+
+        This may not be necessary if we inherit an abstract class"""
+        heritage = dir(super(self.__class__, self)) # inherited attributes
+        return sorted(heritage + self.__class__.__dict__.keys() +
+                      self.__dict__.keys())
 
 
 def _fill_gaps(frame_iter1, frame_iter2):
