@@ -86,7 +86,7 @@ def _pixel_distribution(dataset, tolerance=0.001, min_frames=1000):
     return mean_est, var_est
 
 
-def _whole_frame_shifting(dataset, shifts):
+def _whole_frame_shifting(dataset, shifts, led_times=None):
     """Line up the data by the frame-shift estimates
 
     Parameters
@@ -112,6 +112,8 @@ def _whole_frame_shifting(dataset, shifts):
     max_shifts = np.nanmax([np.nanmax(s.reshape(-1, s.shape[-1]), 0)
                             for s in shifts], 0)
     out_shape = list(dataset.frame_shape)
+    if led_times is not None and len(led_times):
+        out_shape[0] = 2
     if len(min_shifts) == 2:
         out_shape[1] += max_shifts[0] - min_shifts[0]
         out_shape[2] += max_shifts[1] - min_shifts[1]
@@ -123,8 +125,9 @@ def _whole_frame_shifting(dataset, shifts):
     reference = np.zeros(out_shape)
     sum_squares = np.zeros_like(reference)
     count = np.zeros_like(reference)
-    for frame, shift in zip(it.chain.from_iterable(dataset),
-                            it.chain.from_iterable(shifts)):
+    for frame, shift, t in zip(it.chain.from_iterable(dataset),
+                               it.chain.from_iterable(shifts),
+                               it.count()):
         if shift.ndim == 1:  # single shift for the whole volume
             if any(x is np.ma.masked for x in shift):
                 continue
@@ -141,16 +144,41 @@ def _whole_frame_shifting(dataset, shifts):
                     continue
                 low = p_shifts - min_shifts  # TOOD: NaN considerations
                 high = low + plane.shape[:-1]
-                ref[low[0]:high[0], low[1]:high[1]] += np.nan_to_num(plane)
-                ssq[low[0]:high[0], low[1]:high[1]] += np.nan_to_num(
-                    plane ** 2)
-                cnt[low[0]:high[0], low[1]:high[1]] += np.isfinite(plane)
+                if led_times is not None and t in led_times:
+                    rows = led_times[t]
+                    for r, row in enumerate(plane):
+                        if r in rows:
+                            p_idx = 1
+                        else:
+                            p_idx = 0
+                        reference[p_idx, r + p_shifts[0] - min_shifts[0],
+                                  low[1]:high[1]] += np.nan_to_num(row)
+                        sum_squares[p_idx, r + p_shifts[0] - min_shifts[0],
+                                    low[1]:high[1]] += np.nan_to_num(row ** 2)
+                        count[p_idx, r + p_shifts[0] - min_shifts[0],
+                              low[1]:high[1]] += np.isfinite(row)
+                else:
+                    ref[low[0]:high[0], low[1]:high[1]] += np.nan_to_num(plane)
+                    ssq[low[0]:high[0], low[1]:high[1]] += np.nan_to_num(
+                        plane ** 2)
+                    cnt[low[0]:high[0], low[1]:high[1]] += np.isfinite(plane)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         reference /= count
         assert np.all(np.isnan(reference[np.equal(count, 0)]))
-        variances = (sum_squares / count) - reference ** 2
+        variances = (sum_squares[0] / count[0]) - reference[0] ** 2
         assert not np.any(variances < 0)
+    from pylab import figure, show
+    fig = figure()
+    ax = fig.add_subplot(211)
+    ax.imshow(reference[0, ..., 1],
+              vmin=np.nanmin(reference[..., 0]),
+              vmax=np.nanmax(reference[..., 0]))
+    ax = fig.add_subplot(212)
+    ax.imshow(reference[1, ..., 1],
+              vmin=np.nanmin(reference[..., 0]),
+              vmax=np.nanmax(reference[..., 0]))
+    show()
     return reference, variances
 
 
@@ -330,7 +358,8 @@ def _backtrace(start_idx, backpointer, states, position_tbl):
 class _HiddenMarkov(MotionEstimationStrategy):
 
     def __init__(self, granularity=2, num_states_retained=50,
-                 max_displacement=None, n_processes=1, verbose=True):
+                 max_displacement=None, n_processes=1, verbose=True,
+                 led_times=None):
         if isinstance(granularity, int) or isinstance(granularity, str):
             granularity = (granularity, 1)
         elif not isinstance(granularity, tuple):
@@ -370,7 +399,8 @@ class _HiddenMarkov(MotionEstimationStrategy):
                 print('Estimating displacements for cycle ', i)
             imdata = NormalizedIterator(sequence, gains, pixel_means,
                                         pixel_variances, granularity)
-            positions = PositionIterator(sequence.shape[:-1], granularity)
+            positions = PositionIterator(sequence.shape[:-1], granularity,
+                                         self._params['led_times'])
             disp = _beam_search(
                 imdata, positions,
                 it.repeat((transition_tbl, log_markov_tbl)), scaled_refs,
@@ -404,7 +434,9 @@ class _HiddenMarkov(MotionEstimationStrategy):
         if params['verbose']:
             print('Estimating model parameters.')
         shifts = self._estimate_shifts(dataset)
-        references, variances = _whole_frame_shifting(dataset, shifts)
+        references, variances = _whole_frame_shifting(dataset, shifts,
+                                                      self._params['led_times']
+                                                      )
         if params['max_displacement'] is None:
             max_displacement = np.array(dataset.frame_shape[:3]) // 2
         else:
@@ -704,7 +736,7 @@ class PositionIterator(object):
 
     """
 
-    def __init__(self, shape, granularity, offset=None):
+    def __init__(self, shape, granularity, offset=None, led_times=None):
         self.granularity = _parse_granularity(granularity)
         self.shape = shape
         if self.shape[self.granularity[0]] % self.granularity[1] != 0:
@@ -714,30 +746,36 @@ class PositionIterator(object):
             self.offset = [0, 0, 0, 0]
         else:
             self.offset = ([0, 0, 0, 0] + list(offset))[-4:]
+        self.led_times = led_times
 
     def __iter__(self):
         shape = self.shape
         granularity = self.granularity
         offset = self.offset
 
-        def out(group):
+        def out(group, t=None, g=None):
             """Calculate a single iteration output"""
-            return np.array(list(it.chain.from_iterable(
+            pos = np.array(list(it.chain.from_iterable(
                 (base + s for s in it.product(
                     *[range(o, o + x) for x, o in
                       zip(shape[(granularity[0] + 1):],
                           offset[(granularity[0] + 1):])]))
                 for base in group)))
+            if self.led_times is not None and t in self.led_times:
+                for row in self.led_times[t]:
+                    pos[row] += np.array([1, 0, 0])
+            return pos
 
         if granularity[0] > 0 or granularity[1] == 1:
-            def cycle():
+            def cycle(t):
                 """Iterator that produces one period/period of the output."""
                 base_iter = it.product(*[list(range(o, x + o)) for x, o in
                                          zip(shape[1:(granularity[0] + 1)],
                                              offset[1:(granularity[0] + 1)])])
-                for group in zip(*[base_iter] * granularity[1]):
-                    yield out(group)
-            for positions in it.cycle(cycle()):
+                for g, group in enumerate(zip(*[base_iter] * granularity[1])):
+                    yield out(group, t, g)
+            for positions in it.chain.from_iterable(cycle(t)
+                                                    for t in range(shape[0])):
                 yield positions
         else:
             base_iter = it.product(*[list(range(o, x + o)) for x, o in
