@@ -166,19 +166,9 @@ def _whole_frame_shifting(dataset, shifts, led_times=None):
         warnings.simplefilter("ignore")
         reference /= count
         assert np.all(np.isnan(reference[np.equal(count, 0)]))
-        variances = (sum_squares[0] / count[0]) - reference[0] ** 2
+        variances = np.expand_dims(
+            (sum_squares[0] / count[0]) - reference[0] ** 2, 0)
         assert not np.any(variances < 0)
-    from pylab import figure, show
-    fig = figure()
-    ax = fig.add_subplot(211)
-    ax.imshow(reference[0, ..., 1],
-              vmin=np.nanmin(reference[..., 0]),
-              vmax=np.nanmax(reference[..., 0]))
-    ax = fig.add_subplot(212)
-    ax.imshow(reference[1, ..., 1],
-              vmin=np.nanmin(reference[..., 0]),
-              vmax=np.nanmax(reference[..., 0]))
-    show()
     return reference, variances
 
 
@@ -399,8 +389,9 @@ class _HiddenMarkov(MotionEstimationStrategy):
                 print('Estimating displacements for cycle ', i)
             imdata = NormalizedIterator(sequence, gains, pixel_means,
                                         pixel_variances, granularity)
-            positions = PositionIterator(sequence.shape[:-1], granularity,
-                                         self._params['led_times'])
+            positions = PositionIterator(
+                sequence.shape[:-1], granularity,
+                led_times=self._params['led_times'])
             disp = _beam_search(
                 imdata, positions,
                 it.repeat((transition_tbl, log_markov_tbl)), scaled_refs,
@@ -442,7 +433,7 @@ class _HiddenMarkov(MotionEstimationStrategy):
         else:
             max_displacement = np.array(params['max_displacement'])
         gains = nanmedian(
-            (variances / references).reshape(-1, references.shape[-1]))
+            (variances / references[:1]).reshape(-1, references.shape[-1]))
         if not (np.all(np.isfinite(gains)) and np.all(gains > 0)):
             raise Exception('Failed to estimate positive gains')
         pixel_means, pixel_variances = _pixel_distribution(dataset)
